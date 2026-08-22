@@ -40,8 +40,8 @@ Performance is the default on every boot. No third-party binaries — only tools
 ## Install
 
 ```bash
-git clone https://github.com/<you>/thinkpad-power-unlock.git
-cd thinkpad-power-unlock
+git clone https://github.com/vascenso-development/thinkpad-intel-lap-detection-workaround.git
+cd thinkpad-intel-lap-detection-workaround
 chmod +x install.sh
 sudo ./install.sh
 ```
