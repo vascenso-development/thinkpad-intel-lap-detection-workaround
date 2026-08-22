@@ -1,4 +1,4 @@
-# thinkpad-power-unlock
+# thinkpad-intel-lap-detection-workaround
 
 Fix aggressive CPU throttling on Linux ThinkPads (and other Intel laptops) where the CPU is pinned to its lowest clock speed — often around **1000 MHz** — even though temperatures are fine, the governor is set to `performance`, and the normal power limit looks correct.
 
@@ -94,6 +94,63 @@ BATT_PL2_W=20   # short turbo burst in Battery Saver mode
 - Intel CPUs in these classes typically throttle at ~100 °C (TJmax); **~90 °C under a full synthetic load is a healthy target**, not a warning.
 
 ---
+
+## Troubleshooting
+
+### After reboot the limit is back at 5 W
+
+The service probably isn't enabled/running. Check:
+
+```bash
+systemctl status reclamp.service --no-pager
+```
+
+- `Loaded: … disabled` or `Active: inactive (dead)` → it never started this boot. Fix:
+  ```bash
+  sudo systemctl enable reclamp.service
+  sudo systemctl restart reclamp.service
+  ```
+  Then confirm it survives a reboot:
+  ```bash
+  sudo reboot
+  # after login, without touching anything:
+  systemctl is-active reclamp.service          # want: active
+  cat /sys/class/powercap/intel-rapl-mmio/intel-rapl-mmio:0/constraint_0_power_limit_uw   # want: 25000000
+  ```
+
+The installer now enables and starts the service as separate steps and verifies both, so a fresh install shouldn't hit this — but this is the fix if it ever ends up `disabled`.
+
+### The service runs but the limit still snaps back
+
+Then your EC re-clamps faster than the loop re-applies. **The 5-second interval is a default, not a measured value** — some machines revert sub-second. Measure yours:
+
+```bash
+sudo systemctl stop reclamp.service
+echo 25000000 | sudo tee /sys/class/powercap/intel-rapl-mmio/intel-rapl-mmio:0/constraint_0_power_limit_uw
+watch -n1 "cat /sys/class/powercap/intel-rapl-mmio/intel-rapl-mmio:0/constraint_0_power_limit_uw"
+```
+
+- Never drops → you don't even need the loop; a boot-time one-shot would do.
+- Drops after N seconds → set the loop `sleep` to well under N.
+
+**Tuning the interval:** edit the `sleep 5` inside `ExecStart` in `/etc/systemd/system/reclamp.service`, then `sudo systemctl daemon-reload && sudo systemctl restart reclamp.service`.
+
+### On battery, Performance mode does nothing
+
+Some ThinkPads enforce a stricter power limit in firmware when on DC power, and may **lock** the register so no userspace write survives. Check whether it's locked on battery:
+
+```bash
+sudo rdmsr 0x610   # value starting with 8… (bit 63 set) = LOCKED → not fixable from Linux
+```
+
+If it's locked on battery, this is a genuine firmware limit and no re-apply interval will beat it. Also check whether the throttle is actually the pstate ceiling or EPP rather than the power limit on DC:
+
+```bash
+cat /sys/devices/system/cpu/intel_pstate/max_perf_pct
+cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference
+```
+
+If `max_perf_pct` drops or EPP flips to `power` on battery, pin those instead — that's a different (and easier) fix than the power limit.
 
 ## Uninstall
 
