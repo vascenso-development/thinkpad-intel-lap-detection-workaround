@@ -95,7 +95,27 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now reclamp.service
+# Enable (start on boot) and start (start now) as separate explicit steps.
+# A combined `enable --now` can silently no-op on some systems if the unit
+# was already loaded or daemon-reload hadn't settled — so we verify below.
+systemctl enable reclamp.service
+systemctl restart reclamp.service
+
+# Verify it actually came up; fail loudly if not, so the user isn't left
+# thinking it worked when the limit will snap back to the firmware clamp.
+sleep 1
+if ! systemctl is-active --quiet reclamp.service; then
+    echo "✗ reclamp.service failed to start. Diagnose with:" >&2
+    echo "    systemctl status reclamp.service --no-pager" >&2
+    echo "    journalctl -u reclamp.service -b --no-pager" >&2
+    exit 1
+fi
+if ! systemctl is-enabled --quiet reclamp.service; then
+    echo "✗ reclamp.service is running but NOT enabled for boot." >&2
+    echo "    Run: sudo systemctl enable reclamp.service" >&2
+    exit 1
+fi
+echo "   service is active and enabled for boot ✓"
 
 echo "==> Installing profile switch scripts"
 cat > "$PERF_SCRIPT" <<EOF
@@ -159,6 +179,23 @@ sudo -u "$REAL_USER" update-desktop-database "$APP_DIR" 2>/dev/null || true
 for f in "$REAL_HOME/Desktop/cpu-performance.desktop" "$REAL_HOME/Desktop/cpu-battery.desktop"; do
     [ -f "$f" ] && sudo -u "$REAL_USER" gio set "$f" metadata::trusted true 2>/dev/null || true
 done
+
+echo
+echo "==> Verifying the power limit actually changed"
+sleep 6   # allow at least one service loop iteration
+MMIO="/sys/class/powercap/intel-rapl-mmio/intel-rapl-mmio:0/constraint_0_power_limit_uw"
+if [ -r "$MMIO" ]; then
+    NOW="$(cat "$MMIO")"
+    WANT="$(uW "$PERF_PL1_W")"
+    if [ "$NOW" = "$WANT" ]; then
+        echo "   limit is now ${NOW} µW (= ${PERF_PL1_W} W) ✓"
+    else
+        echo "   ⚠  limit reads ${NOW} µW, expected ${WANT} µW."
+        echo "      The service is running but the write isn't holding — your"
+        echo "      EC may re-clamp faster than the 5 s loop. Lower the sleep"
+        echo "      interval in $SERVICE_FILE (see README: 'Tuning the interval')."
+    fi
+fi
 
 echo
 echo "✅ Done."
